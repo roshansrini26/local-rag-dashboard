@@ -50,7 +50,7 @@ def main():
             ids=[f"{filename}_chunk_{i}"],
             embeddings=[vector],
             documents=[chunk],
-            metadatas=[{"cource": filename, "chunk_index":i}]
+            metadatas=[{"source": filename, "chunk_index":i}]
         )
         if (i+1)%10 == 0:
             print(f"{i+1}/{len(chunks)} chunks stored")
