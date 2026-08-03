@@ -22,6 +22,7 @@ def load_pdf_text_and_images(path):
     doc = fitz.open(path)
     full_text = ""
     images = []
+    tables = []
 
     for page_num, page in enumerate(doc):
         text = page.get_text()
@@ -40,8 +41,12 @@ def load_pdf_text_and_images(path):
 
             images.append((img_path, page_num + 1))
 
+        page_tables = extract_tables_from_pdf(page)
+        for t in page_tables:
+            tables.append((t, page_num + 1))
+
     doc.close()
-    return full_text, images
+    return full_text, images, tables
 
 
 #DOCX handling
@@ -64,7 +69,54 @@ def load_docx_text_and_images(path):
             images.append((img_path, None))
             img_index += 1
 
-    return full_text, images
+    tables = []
+    for table in doc.tables:
+        rows = [[cell.text for cell in row.cells] for row in table.rows]
+        if len(rows) >= 2:
+            tables.append((rows_to_markdown(rows), None))
+
+
+    return full_text, images, tables
+
+#table handling
+
+def extract_tables_from_pdf(page):
+    tables = []
+
+    try:
+        found = page.find_tables()
+        for table in found.tables:
+            data = table.extract()
+            if not data or len(data) < 2:
+                continue
+            if not is_meaningful_table(data):
+                continue
+            tables.append(rows_to_markdown(data))
+    except Exception as e:
+        print(f"Error extracting tables from page {page.number + 1}: {e}")
+
+    return tables
+
+def rows_to_markdown(rows):
+    def clean(cell):
+        return (cell or "").strip().replace("\n"," ")
+
+    header = rows[0]
+    body = rows[1:]
+    md  = "| " + " | ".join(clean(c) for c in header) + " |\n"
+    md += "| " + " | ".join(["---"] * len(header)) + " |\n"
+    for row in body:
+        md += "| " + " | ".join(clean(c) for c in row) + " |\n"
+    return md
+
+def is_meaningful_table(rows):
+    tot_cells = sum(len(row) for row in rows)
+    non_empty_cells = sum(1 for row in rows for cell in row if cell and cell.strip())
+    if tot_cells == 0:
+        return False
+    fill_ratio = non_empty_cells / tot_cells
+    return fill_ratio >= 0.5 and len(rows) >= 2
+
 
 #Image description via vision model
 
@@ -98,9 +150,9 @@ def ingest_file(path, embeddings, collection, vision_llm):
 
     print(f"\nLoading {filename}...")
     if ext == ".pdf":
-        text, images = load_pdf_text_and_images(path)
+        text, images, tables = load_pdf_text_and_images(path)
     elif ext == ".docx":
-        text, images = load_docx_text_and_images(path)
+        text, images, tables = load_docx_text_and_images(path)
     else:
         print(f"Unsupported file type: {filename}. Skipping.")
         return
@@ -125,6 +177,27 @@ def ingest_file(path, embeddings, collection, vision_llm):
         )
         if (i + 1) % 10 == 0:
             print(f"{i + 1}/{len(chunks)} text chunks stored.")
+
+    #Table chunks
+
+    if tables:
+        print(f"Storing {len(tables)} tables...")
+        for i, (table_md, page_num) in enumerate(tables):
+            table_text = f"[Table from {filename}, page {page_num}]\n{table_md}"
+            vector = embeddings.embed_query(table_text)
+            collection.add(
+                ids=[f"{filename}_table_{i}"],
+                embeddings=[vector],
+                documents=[table_text],
+                metadatas=[{
+                    "source": filename,
+                    "chunk_index": i,
+                    "content_type": "table",
+                    "page_number": page_num if page_num else -1
+                }]
+            )
+            print(f"Table {i + 1}/{len(tables)} stored.")
+        print(f"Done storing tables from {filename}.")
 
     #Image chunks (described via vision model, embedded and stored)
 
