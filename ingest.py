@@ -2,6 +2,7 @@ import fitz
 from docx import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings, ChatOllama
+from docling.document_converter import DocumentConverter
 import chromadb
 import os
 import base64
@@ -16,47 +17,92 @@ TEMP_IMG_DIR = "temp_images"
 
 os.makedirs(TEMP_IMG_DIR, exist_ok=True)
 
+
+def needs_docling(quick_text):
+    """Heuristic: route to Docling only if document likely has tables or heavy math"""
+    table_signal = "table " in quick_text.lower()
+    math_symbols = ["∑", "∫", "√", "≈", "≤", "≥", "±", "∂", "∇", "×10", "·10"]
+    math_signal = any(s in quick_text for s in math_symbols)
+    return table_signal or math_signal
+
+
+def split_markdown_tables(markdown_text):
+    lines = markdown_text.split("\n")
+    text_lines = []
+    tables = []
+    current_table = []
+    in_table = False
+    last_nonempty_line = ""
+
+    for line in lines:
+        if line.strip().startswith("|"):
+            if not in_table:
+                # starting a new table — grab the line right before it as a likely caption
+                current_table.append(f"CAPTION: {last_nonempty_line}")
+            current_table.append(line)
+            in_table = True
+        else:
+            if in_table:
+                if len(current_table) >= 2:
+                    tables.append("\n".join(current_table))
+                current_table = []
+                in_table = False
+            text_lines.append(line)
+            if line.strip():
+                last_nonempty_line = line.strip()
+
+    if in_table and len(current_table) >= 2:
+        tables.append("\n".join(current_table))
+
+    full_text = "\n".join(text_lines)
+    return full_text, tables
+
+
 #PDF handling
 
 def load_pdf_text_and_images(path):
     doc = fitz.open(path)
-    full_text = ""
+
+    # Fast pass: quick text extraction for heuristic check + images
+    quick_text = ""
     images = []
-    tables = []
-
     for page_num, page in enumerate(doc):
-        text = page.get_text()
-        full_text += f"\n[page {page_num + 1}]\n{text}"
-
+        quick_text += page.get_text()
         for img_index, img in enumerate(page.get_images(full=True)):
             xref = img[0]
             bbox = page.get_image_bbox(img)
-
-            mat = fitz.Matrix(3, 3)  # 3x zoom for higher resolution
+            mat = fitz.Matrix(3, 3)
             pix = page.get_pixmap(matrix=mat, clip=bbox)
-
             img_filename = f"{Path(path).stem}_page{page_num + 1}_img{img_index + 1}.png"
             img_path = os.path.join(TEMP_IMG_DIR, img_filename)
             pix.save(img_path)
-
             images.append((img_path, page_num + 1))
-
-        page_tables = extract_tables_from_pdf(page)
-        for t in page_tables:
-            tables.append((t, page_num + 1))
-
     doc.close()
-    return full_text, images, tables
+
+    if needs_docling(quick_text):
+        print("  Table/formula indicators found — using Docling for accurate extraction...")
+        converter = DocumentConverter()
+        result = converter.convert(path)
+        markdown = result.document.export_to_markdown()
+        full_text, tables = split_markdown_tables(markdown)
+        tables_with_pages = [(t, None) for t in tables]
+    else:
+        print("  No table/formula indicators — using fast text extraction...")
+        full_text = ""
+        for page_num, page in enumerate(fitz.open(path)):
+            full_text += f"\n[page {page_num + 1}]\n{page.get_text()}"
+        tables_with_pages = []
+
+    return full_text, images, tables_with_pages
 
 
 #DOCX handling
 
 def load_docx_text_and_images(path):
-    """"""
     doc = Document(path)
-    full_text = "\n".join([para.text for para in doc.paragraphs])
+    quick_text = "\n".join([para.text for para in doc.paragraphs])
 
-    images= []
+    images = []
     img_index = 0
     for rel in doc.part.rels.values():
         if "image" in rel.target_ref:
@@ -69,53 +115,19 @@ def load_docx_text_and_images(path):
             images.append((img_path, None))
             img_index += 1
 
-    tables = []
-    for table in doc.tables:
-        rows = [[cell.text for cell in row.cells] for row in table.rows]
-        if len(rows) >= 2:
-            tables.append((rows_to_markdown(rows), None))
+    if needs_docling(quick_text):
+        print("  Table/formula indicators found — using Docling for accurate extraction...")
+        converter = DocumentConverter()
+        result = converter.convert(path)
+        markdown = result.document.export_to_markdown()
+        full_text, tables = split_markdown_tables(markdown)
+        tables_with_pages = [(t, None) for t in tables]
+    else:
+        print("  No table/formula indicators — using fast text extraction...")
+        full_text = quick_text
+        tables_with_pages = []
 
-
-    return full_text, images, tables
-
-#table handling
-
-def extract_tables_from_pdf(page):
-    tables = []
-
-    try:
-        found = page.find_tables()
-        for table in found.tables:
-            data = table.extract()
-            if not data or len(data) < 2:
-                continue
-            if not is_meaningful_table(data):
-                continue
-            tables.append(rows_to_markdown(data))
-    except Exception as e:
-        print(f"Error extracting tables from page {page.number + 1}: {e}")
-
-    return tables
-
-def rows_to_markdown(rows):
-    def clean(cell):
-        return (cell or "").strip().replace("\n"," ")
-
-    header = rows[0]
-    body = rows[1:]
-    md  = "| " + " | ".join(clean(c) for c in header) + " |\n"
-    md += "| " + " | ".join(["---"] * len(header)) + " |\n"
-    for row in body:
-        md += "| " + " | ".join(clean(c) for c in row) + " |\n"
-    return md
-
-def is_meaningful_table(rows):
-    tot_cells = sum(len(row) for row in rows)
-    non_empty_cells = sum(1 for row in rows for cell in row if cell and cell.strip())
-    if tot_cells == 0:
-        return False
-    fill_ratio = non_empty_cells / tot_cells
-    return fill_ratio >= 0.5 and len(rows) >= 2
+    return full_text, images, tables_with_pages
 
 
 #Image description via vision model
@@ -127,17 +139,18 @@ def describe_image(image_path, vision_llm=None):
             "role": "user",
             "content": "Describe this figure/diagram/chart in detail. Explain what it shows, "
                         "any labels, axes, or data trends visible. Be specific and factual.",
-            "images": [image_path]  # pass the file path directly, not base64
+            "images": [image_path]
         }]
     )
     return response["message"]["content"]
+
 
 #chunking
 
 def chunk_text(text):
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size = 800,
-        chunk_overlap = 100,
+        chunk_size=800,
+        chunk_overlap=100,
         separators=["\n\n", "\n", ". ", " ", ""]
     )
     return splitter.split_text(text)
@@ -170,7 +183,7 @@ def ingest_file(path, embeddings, collection, vision_llm):
             embeddings=[vector],
             documents=[chunk],
             metadatas=[{
-                "source": filename, 
+                "source": filename,
                 "chunk_index": i,
                 "content_type": "text"
                 }]
@@ -179,7 +192,6 @@ def ingest_file(path, embeddings, collection, vision_llm):
             print(f"{i + 1}/{len(chunks)} text chunks stored.")
 
     #Table chunks
-
     if tables:
         print(f"Storing {len(tables)} tables...")
         for i, (table_md, page_num) in enumerate(tables):
@@ -200,7 +212,6 @@ def ingest_file(path, embeddings, collection, vision_llm):
         print(f"Done storing tables from {filename}.")
 
     #Image chunks (described via vision model, embedded and stored)
-
     if images:
         print(f"Describing {len(images)} images with {VISION_MODEL}...")
         for i, (img_path, page_num) in enumerate(images):
@@ -225,8 +236,6 @@ def ingest_file(path, embeddings, collection, vision_llm):
         print(f"Done describing and storing {filename}")
 
 
-
-
 def main():
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
     vision_llm = ChatOllama(model=VISION_MODEL, temperature=0.1)
@@ -238,7 +247,6 @@ def main():
     if not files:
         print(f"No PDF or DOCX files found in {DATA_DIR}.")
         return
-    
 
     for filename in files:
         file_path = os.path.join(DATA_DIR, filename)
@@ -246,7 +254,6 @@ def main():
             ingest_file(file_path, embeddings, collection, vision_llm)
 
     print("\nAll files ingested and stored in ChromaDB.")
-
 
 
 if __name__ == "__main__":

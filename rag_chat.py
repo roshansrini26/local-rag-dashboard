@@ -4,7 +4,7 @@ import chromadb
 CHROMA_DIR = "chroma_db"
 COLLECTION_NAME = "source"
 LLM_MODEL = "llama3.1:8b"
-TOP_K = 4
+TOP_K = 6
 
 PROMPT_TEMPLATE = """You are a research assistant answering questions only based on the provided context from documents.
 
@@ -14,9 +14,10 @@ Context:
 Question: {question}
 
 Instructions:
--Answer using only the information provided in the context.
--If the context doesnot contain enough information to answer, say so clearly.
--After your answer, cite the sources used in this format: (source: <source_name>, chunk: <chunk_index>).
+- Answer using only the information in the context above.
+- If the context contains multiple different values that could answer the question (e.g., the same metric appears in different tables or experiments), mention all of them and clearly specify which table or section each comes from.
+- If the context does not contain enough information to answer, say so clearly.
+- After your answer, cite the sources used in this format: [source: filename, chunk X]
 
 Answer:"""
 
