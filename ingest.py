@@ -9,13 +9,35 @@ import base64
 from pathlib import Path
 import ollama as ollama_client
 
+import hashlib
+import json
+
+
+
 DATA_DIR = "data"
 CHROMA_DIR = "chroma_db"
 COLLECTION_NAME = "source"
 VISION_MODEL = "qwen2.5vl:7b"
 TEMP_IMG_DIR = "temp_images"
+MANIFEST_FILE = "manifest.json"
 
 os.makedirs(TEMP_IMG_DIR, exist_ok=True)
+
+def get_file_hash(path):
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        hasher.update(f.read())
+    return hasher.hexdigest()
+
+def load_manifest():
+    if os.path.exists(MANIFEST_FILE):
+        with open(MANIFEST_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_manifest(manifest):
+    with open(MANIFEST_FILE, "w") as f:
+        json.dump(manifest, f, indent=2)
 
 
 def needs_docling(quick_text):
@@ -243,6 +265,8 @@ def main():
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
+    manifest = load_manifest()
+
     files = [f for f in os.listdir(DATA_DIR) if f.lower().endswith(('.pdf', '.docx'))]
     if not files:
         print(f"No PDF or DOCX files found in {DATA_DIR}.")
@@ -250,8 +274,18 @@ def main():
 
     for filename in files:
         file_path = os.path.join(DATA_DIR, filename)
-        if os.path.isfile(file_path):
-            ingest_file(file_path, embeddings, collection, vision_llm)
+        if not os.path.isfile(file_path):
+            continue
+
+        file_hash = get_file_hash(file_path)
+
+        if filename in manifest and manifest[filename]["hash"] == file_hash:
+            print(f"Skipping {filename}: already ingested and unchanged.")
+            continue
+
+        ingest_file(file_path, embeddings, collection, vision_llm)
+        manifest[filename] = {"hash": file_hash}
+        save_manifest(manifest)
 
     print("\nAll files ingested and stored in ChromaDB.")
 

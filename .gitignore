@@ -222,3 +222,4 @@ data/
 *.pdf
 notes/
 .envtemp_images/
+ingested_manifest.json
