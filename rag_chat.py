@@ -1,4 +1,6 @@
 from langchain_ollama import OllamaEmbeddings, ChatOllama
+from rank_bm25 import BM25Okapi
+import re
 import chromadb
 
 CHROMA_DIR = "chroma_db"
@@ -21,16 +23,47 @@ Instructions:
 
 Answer:"""
 
-def retrieve_chunks(query, embeddings, collection, k=TOP_K):
+def build_bm25_index(collection):
+    all_items = collection.get(limit=10000, include=["documents", "metadatas"])
+    documents = all_items["documents"]
+    metadatas = all_items["metadatas"]
+    ids = all_items["ids"]
+
+    tokenized = [re.findall(r'\w+', doc.lower()) for doc in documents]
+    bm25 = BM25Okapi(tokenized)
+
+    return bm25, documents, metadatas, ids
+
+def retrieve_chunks_hybrid(query, embeddings, collection,bm25, bm25_docs, bm25_metas, bm25_ids, k=TOP_K):
+    #dense retreival
     query_vector = embeddings.embed_query(query)
-    results = collection.query(
+    dense_results = collection.query(
         query_embeddings=[query_vector],
-        n_results=k,
+        n_results=k*2,
         include=["documents", "metadatas","distances"]
     )
+    dense_ids = dense_results["ids"][0]
+
+    #BM25 retrieval
+    tokenized_query = re.findall(r'\w+', query.lower())
+    bm25_scores = bm25.get_scores(tokenized_query)
+    bm25_ranked = sorted(range(len(bm25_scores)), key=lambda i: bm25_scores[i], reverse=True)[:k*2]
+    bm25_top_ids = [bm25_ids[i] for i in bm25_ranked]
+
+    #RRF (Reciprocal Rank Fusion): combine both rankings
+    rrf_scores = {}
+    rrf_k = 60
+    for rank, doc_id in enumerate(dense_ids):
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1 / (rrf_k + rank + 1)
+    for rank, doc_id in enumerate(bm25_top_ids):
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1 / (rrf_k + rank + 1)
+
+    merged_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)[:k]
+
+    id_to_doc = {doc_id: (doc, meta) for doc_id, doc, meta in zip(bm25_ids, bm25_docs, bm25_metas)}
     chunks = []
-    for i, doc in enumerate(results["documents"][0]):
-        meta = results["metadatas"][0][i]
+    for doc_id in merged_ids:
+        doc, meta = id_to_doc[doc_id]
         chunks.append({
             "text": doc,
             "source": meta.get("source", "unknown"),
@@ -51,6 +84,9 @@ def main():
     client = chromadb.PersistentClient(path=CHROMA_DIR)
     collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
+    print("Building BM25 index...")
+    bm25, bm25_docs, bm25_metas, bm25_ids = build_bm25_index(collection)
+
     print("Welcome to the RAG Chatbot! Type 'exit' to quit.")
 
     while True:
@@ -60,7 +96,7 @@ def main():
         if not question:
             continue
 
-        chunks = retrieve_chunks(question, embeddings, collection)
+        chunks = retrieve_chunks_hybrid(question, embeddings, collection, bm25, bm25_docs, bm25_metas, bm25_ids)
         context = build_context(chunks)
 
         prompt = PROMPT_TEMPLATE.format(context=context, question=question)
