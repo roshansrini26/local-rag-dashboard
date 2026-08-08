@@ -1,6 +1,6 @@
 import fitz
 from docx import Document
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from docling.document_converter import DocumentConverter
 import chromadb
@@ -11,6 +11,7 @@ import ollama as ollama_client
 
 import hashlib
 import json
+import re
 
 
 
@@ -169,13 +170,51 @@ def describe_image(image_path, vision_llm=None):
 
 #chunking
 
+def chunk_by_sentence(text, max_chars=800, overlap_sentences=2):
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    sentences = [s for s in sentences if s.strip()]
+    chunks = []
+    current = []
+    current_len = 0
+
+    for sentence in sentences:
+        if current_len + len(sentence) > max_chars and current:
+            chunks.append(" ".join(current))
+            current = current[-overlap_sentences:] if overlap_sentences else []
+            current_len = sum(len(s) for s in current)
+        current.append(sentence)
+        current_len += len(sentence)
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
 def chunk_text(text):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=800,
-        chunk_overlap=100,
-        separators=["\n\n", "\n", ". ", " ", ""]
-    )
-    return splitter.split_text(text)
+    headers_to_split_on = [("#", "h1"), ("##", "h2"), ("###", "h3")]
+    md_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+
+    try:
+        sections = md_splitter.split_text(text)
+    except Exception:
+        sections = None
+
+    all_chunks = []
+
+    if sections:
+        for section in sections:
+            content = section.page_content.strip()
+            if not content:
+                continue
+            header_prefix = "" 
+            if section.metadata:
+                header_prefix = " > ".join(section.metadata.values()) + "\n"
+            section_chunks = chunk_by_sentence(content, max_chars=800, overlap_sentences=2)
+            for c in section_chunks:
+                all_chunks.append(header_prefix + c if header_prefix else c)
+    else:
+        all_chunks = chunk_by_sentence(text, max_chars=800, overlap_sentences=2)
+    return all_chunks
 
 
 #main ingestion
