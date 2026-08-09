@@ -1,3 +1,5 @@
+import datetime
+
 import fitz
 from docx import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter
@@ -237,6 +239,10 @@ def ingest_file(path, embeddings, collection, vision_llm):
     chunks = chunk_text(text)
     print(f"Created {len(chunks)} text chunks.")
 
+
+    ingestion_time = datetime.datetime.now().isoformat()
+    total_chunks = len(chunks)
+
     for i, chunk in enumerate(chunks):
         vector = embeddings.embed_query(chunk)
         collection.add(
@@ -246,7 +252,9 @@ def ingest_file(path, embeddings, collection, vision_llm):
             metadatas=[{
                 "source": filename,
                 "chunk_index": i,
-                "content_type": "text"
+                "content_type": "text",
+                "ingestion_time": ingestion_time,
+                "total_chunks_in_doc": total_chunks
                 }]
         )
         if (i + 1) % 10 == 0:
