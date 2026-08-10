@@ -221,5 +221,6 @@ chroma_db/
 data/
 *.pdf
 notes/
-.envtemp_images/
-ingested_manifest.json
+.env
+temp_images/
+manifest.json
