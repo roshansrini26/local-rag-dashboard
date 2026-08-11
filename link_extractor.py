@@ -23,30 +23,33 @@ def extract_links(pdf_path):
     doc = fitz.open(pdf_path)
     ref_start = find_reference_start_page(doc)
 
-    links = []
-    seen_urls = set()
+    links_by_normalized = {}
 
-    url_pattern = re.compile(r"https?://[^\s\)\]]+")
+    url_pattern = re.compile(r'https?://[^\s\)\]]+')
 
     for page_num, page in enumerate(doc):
         if ref_start is not None and page_num >= ref_start:
             break
 
+        candidates = []
+
         for link in page.get_links():
             uri = link.get("uri")
-            if uri and uri not in seen_urls:
-                seen_urls.add(uri)
-                links.append({"url": uri, "page": page_num + 1})
-
+            if uri:
+                candidates.append(uri)
 
         text = page.get_text()
         for match in url_pattern.findall(text):
-            clean_url = match.rstrip('.,;')
-            if clean_url not in seen_urls:
-                seen_urls.add(clean_url)
-                links.append({"url": clean_url, "page": page_num + 1})
+            candidates.append(match.rstrip('.,;'))
+
+        for url in candidates:
+            key = url.rstrip('/.,;').lower()
+            key = re.sub(r'\.\.\.$', '', key)  
+            if key not in links_by_normalized or len(url) > len(links_by_normalized[key]["url"]):
+                links_by_normalized[key] = {"url": url, "page": page_num + 1}
+
     doc.close()
-    return links
+    return list(links_by_normalized.values())
 
 def get_links_for_file(pdf_path, filename):
     cache_path = os.path.join(LINKS_DIR, f"{filename}.json")
