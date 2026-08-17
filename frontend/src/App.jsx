@@ -1,121 +1,165 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
+import { useState, useEffect, useRef } from 'react'
 import './App.css'
 
+const API = 'http://localhost:8000'
+
 function App() {
-  const [count, setCount] = useState(0)
+  const [documents, setDocuments] = useState([])
+  const [selected, setSelected] = useState(new Set())
+  const [messages, setMessages] = useState([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [links, setLinks] = useState({})
+  const [expanded, setExpanded] = useState({})
+  const [ingesting, setIngesting] = useState(false)
+  const chatEndRef = useRef(null)
+
+  useEffect(() => {
+    fetchDocuments()
+  }, [])
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, loading])
+
+  const fetchDocuments = async () => {
+    const res = await fetch(`${API}/documents`)
+    const data = await res.json()
+    setDocuments(data.documents)
+    setSelected(new Set(data.documents))
+  }
+
+  const toggleDoc = (name) => {
+    const next = new Set(selected)
+    next.has(name) ? next.delete(name) : next.add(name)
+    setSelected(next)
+  }
+
+  const toggleLinks = async (name) => {
+    setExpanded(prev => ({ ...prev, [name]: !prev[name] }))
+    if (!links[name]) {
+      const res = await fetch(`${API}/links/${encodeURIComponent(name)}`)
+      const data = await res.json()
+      setLinks(prev => ({ ...prev, [name]: data.links }))
+    }
+  }
+
+  const sendMessage = async () => {
+    if (!input.trim() || loading) return
+    const question = input.trim()
+    setInput('')
+    setMessages(prev => [...prev, { role: 'user', content: question }])
+    setLoading(true)
+
+    try {
+      const res = await fetch(`${API}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question,
+          sources: selected.size === documents.length ? null : Array.from(selected)
+        })
+      })
+      const data = await res.json()
+      setMessages(prev => [...prev, { role: 'assistant', content: data.answer }])
+    } catch (e) {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Error: could not reach the API.' }])
+    }
+    setLoading(false)
+  }
+
+  const handleUpload = async (e) => {
+    const files = e.target.files
+    if (!files.length) return
+    const formData = new FormData()
+    for (const f of files) formData.append('files', f)
+    await fetch(`${API}/upload`, { method: 'POST', body: formData })
+    fetchDocuments()
+  }
+
+  const runIngestion = async () => {
+    setIngesting(true)
+    await fetch(`${API}/ingest`, { method: 'POST' })
+    setIngesting(false)
+    fetchDocuments()
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
+    <div className="app">
+      <aside className="panel left">
+        <h2>Documents</h2>
+        <label className="upload-btn">
+          Upload PDF / DOCX
+          <input type="file" multiple accept=".pdf,.docx" onChange={handleUpload} hidden />
+        </label>
+        <button className="ingest-btn" onClick={runIngestion} disabled={ingesting}>
+          {ingesting ? 'Ingesting…' : 'Run Ingestion'}
         </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
+        <div className="divider" />
+        <p className="count">{documents.length} document(s)</p>
+        <ul className="doc-list">
+          {documents.map(doc => (
+            <li key={doc}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={selected.has(doc)}
+                  onChange={() => toggleDoc(doc)}
+                />
+                <span>{doc}</span>
+              </label>
             </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+          ))}
+        </ul>
+      </aside>
+
+      <main className="panel center">
+        <h2>Chat</h2>
+        <div className="chat-scroll">
+          {messages.length === 0 && (
+            <p className="empty">Ask a question about your documents.</p>
+          )}
+          {messages.map((m, i) => (
+            <div key={i} className={`msg ${m.role}`}>
+              <div className="bubble">{m.content}</div>
+            </div>
+          ))}
+          {loading && <div className="msg assistant"><div className="bubble thinking">Thinking…</div></div>}
+          <div ref={chatEndRef} />
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
+        <div className="input-bar">
+          <input
+            type="text"
+            value={input}
+            placeholder="Ask a question about your documents…"
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && sendMessage()}
+            disabled={loading}
+          />
+          <button onClick={sendMessage} disabled={loading || !input.trim()}>Send</button>
         </div>
-      </section>
+      </main>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      <aside className="panel right">
+        <h2>Quick Links</h2>
+        {Array.from(selected).filter(d => d.toLowerCase().endsWith('.pdf')).map(doc => (
+          <div key={doc} className="link-group">
+            <button className="link-header" onClick={() => toggleLinks(doc)}>
+              {expanded[doc] ? '▾' : '▸'} {doc}
+            </button>
+            {expanded[doc] && (
+              <div className="link-items">
+                {links[doc]?.length ? links[doc].map((l, i) => (
+                  <a key={i} href={l.url} target="_blank" rel="noreferrer">
+                    {l.url} <span className="page">p.{l.page}</span>
+                  </a>
+                )) : <p className="empty small">No links found.</p>}
+              </div>
+            )}
+          </div>
+        ))}
+      </aside>
+    </div>
   )
 }
 
