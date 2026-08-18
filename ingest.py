@@ -437,6 +437,50 @@ def check_url_updates():
     save_manifest(manifest)
     return changed
 
+def approve_url_update(url, embeddings, collection):
+    """Re-ingest a changed URL, replacing its old chunks."""
+    manifest = load_manifest()
+    entry = manifest["urls"].get(url)
+    if not entry or entry["status"] != "changed":
+        print(f"No pending change for {url}")
+        return
+
+    source_name = entry["source_name"]
+
+    # remove old chunks for this source
+    existing = collection.get(where={"source": source_name})
+    if existing["ids"]:
+        collection.delete(ids=existing["ids"])
+        print(f"Removed {len(existing['ids'])} old chunks.")
+
+    content_hash, source_name = ingest_url(url, embeddings, collection)
+    now = datetime.now().isoformat()
+    entry.update({
+        "hash": content_hash,
+        "ingested_at": now,
+        "last_checked": now,
+        "status": "current",
+        "pending_hash": None
+    })
+    save_manifest(manifest)
+    print(f"Approved and re-ingested {url}")
+
+
+def reject_url_update(url):
+    """Keep the existing version; stop re-flagging this specific change."""
+    manifest = load_manifest()
+    entry = manifest["urls"].get(url)
+    if not entry or entry["status"] != "changed":
+        print(f"No pending change for {url}")
+        return
+
+    entry["hash"] = entry["pending_hash"]   # accept new content as the baseline
+    entry["status"] = "current"
+    entry["pending_hash"] = None
+    entry["last_reviewed"] = datetime.now().isoformat()
+    save_manifest(manifest)
+    print(f"Rejected update for {url} — keeping existing indexed version.")
+    
 def main():
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
     vision_llm = ChatOllama(model=VISION_MODEL, temperature=0.1)
