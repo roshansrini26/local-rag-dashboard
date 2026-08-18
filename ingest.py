@@ -1,5 +1,3 @@
-import datetime
-
 import fitz
 from docx import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter
@@ -10,6 +8,10 @@ import os
 import base64
 from pathlib import Path
 import ollama as ollama_client
+
+import requests
+from urllib.parse import urlparse
+from datetime import datetime
 
 import hashlib
 import json
@@ -35,8 +37,15 @@ def get_file_hash(path):
 def load_manifest():
     if os.path.exists(MANIFEST_FILE):
         with open(MANIFEST_FILE, "r") as f:
-            return json.load(f)
-    return {}
+            data = json.load(f)
+            # migrate old flat format if needed
+            if "files" not in data and "urls" not in data:
+                return {"files": data, "urls": {}}
+            data.setdefault("files", {})
+            data.setdefault("urls", {})
+            return data
+    return {"files": {}, "urls": {}}
+
 
 def save_manifest(manifest):
     with open(MANIFEST_FILE, "w") as f:
@@ -218,6 +227,29 @@ def chunk_text(text):
         all_chunks = chunk_by_sentence(text, max_chars=800, overlap_sentences=2)
     return all_chunks
 
+#handle URL
+def fetch_url_content(url):
+    """Fetch a URL and return (full_text, tables, content_hash) via Docling."""
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; LocalRAG/1.0)"}
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    converter = DocumentConverter()
+    result = converter.convert(url)
+    markdown = result.document.export_to_markdown()
+    full_text, tables = split_markdown_tables(markdown)
+    tables_with_pages = [(t, None) for t in tables]
+
+    content_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
+
+    return full_text, tables_with_pages, content_hash
+
+
+def url_to_source_name(url):
+    """Stable, readable identifier for a URL source."""
+    parsed = urlparse(url)
+    path = parsed.path.strip("/").replace("/", "_") or "index"
+    return f"{parsed.netloc}_{path}"[:120]
 
 #main ingestion
 def ingest_file(path, embeddings, collection, vision_llm):
@@ -240,7 +272,7 @@ def ingest_file(path, embeddings, collection, vision_llm):
     print(f"Created {len(chunks)} text chunks.")
 
 
-    ingestion_time = datetime.datetime.now().isoformat()
+    ingestion_time = datetime.now().isoformat()
     total_chunks = len(chunks)
 
     for i, chunk in enumerate(chunks):
@@ -304,6 +336,106 @@ def ingest_file(path, embeddings, collection, vision_llm):
                 print(f"Error describing image {img_path}: {e}")
         print(f"Done describing and storing {filename}")
 
+def ingest_url(url, embeddings, collection):
+    source_name = url_to_source_name(url)
+    print(f"\nFetching {url}...")
+
+    text, tables, content_hash = fetch_url_content(url)
+    print(f"Extracted {len(text)} characters, {len(tables)} tables.")
+
+    chunks = chunk_text(text)
+    print(f"Created {len(chunks)} text chunks.")
+
+    ingestion_time = datetime.now().isoformat()
+    total_chunks = len(chunks)
+
+    for i, chunk in enumerate(chunks):
+        vector = embeddings.embed_query(chunk)
+        collection.add(
+            ids=[f"{source_name}_text_{i}"],
+            embeddings=[vector],
+            documents=[chunk],
+            metadatas=[{
+                "source": source_name,
+                "source_url": url,
+                "source_type": "url",
+                "chunk_index": i,
+                "content_type": "text",
+                "ingestion_time": ingestion_time,
+                "total_chunks_in_doc": total_chunks
+            }]
+        )
+        if (i + 1) % 10 == 0:
+            print(f"{i + 1}/{len(chunks)} text chunks stored.")
+
+    if tables:
+        print(f"Storing {len(tables)} tables...")
+        for i, (table_md, _) in enumerate(tables):
+            table_text = f"[Table from {url}]\n{table_md}"
+            vector = embeddings.embed_query(table_text)
+            collection.add(
+                ids=[f"{source_name}_table_{i}"],
+                embeddings=[vector],
+                documents=[table_text],
+                metadatas=[{
+                    "source": source_name,
+                    "source_url": url,
+                    "source_type": "url",
+                    "chunk_index": i,
+                    "content_type": "table",
+                    "ingestion_time": ingestion_time
+                }]
+            )
+        print(f"{len(tables)} tables stored.")
+
+    print(f"Done ingesting {url}")
+    return content_hash, source_name
+
+def add_url(url, embeddings, collection):
+    manifest = load_manifest()
+    if url in manifest["urls"] and manifest["urls"][url]["status"] == "current":
+        print(f"Already tracked: {url}")
+        return
+
+    content_hash, source_name = ingest_url(url, embeddings, collection)
+    now = datetime.now().isoformat()
+    manifest["urls"][url] = {
+        "hash": content_hash,
+        "source_name": source_name,
+        "ingested_at": now,
+        "last_checked": now,
+        "status": "current",
+        "pending_hash": None
+    }
+    save_manifest(manifest)
+    print(f"Tracking {url}")
+
+
+def check_url_updates():
+    """Re-fetch tracked URLs, flag changed ones. Does NOT re-ingest."""
+    manifest = load_manifest()
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; LocalRAG/1.0)"}
+    changed = []
+
+    for url, entry in manifest["urls"].items():
+        try:
+            _, _, new_hash = fetch_url_content(url)
+        except Exception as e:
+            print(f"Could not check {url}: {e}")
+            continue
+
+        entry["last_checked"] = datetime.now().isoformat()
+
+        if new_hash != entry["hash"]:
+            entry["status"] = "changed"
+            entry["pending_hash"] = new_hash
+            changed.append(url)
+            print(f"CHANGED: {url}")
+        else:
+            print(f"unchanged: {url}")
+
+    save_manifest(manifest)
+    return changed
 
 def main():
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
@@ -326,12 +458,15 @@ def main():
 
         file_hash = get_file_hash(file_path)
 
-        if filename in manifest and manifest[filename]["hash"] == file_hash:
+        if filename in manifest["files"] and manifest["files"][filename]["hash"] == file_hash:
             print(f"Skipping {filename}: already ingested and unchanged.")
             continue
 
         ingest_file(file_path, embeddings, collection, vision_llm)
-        manifest[filename] = {"hash": file_hash}
+        manifest["files"][filename] = {
+            "hash": file_hash,
+            "ingested_at": datetime.now().isoformat()
+        }
         save_manifest(manifest)
 
     print("\nAll files ingested and stored in ChromaDB.")
