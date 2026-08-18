@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import ReactMarkdown from 'react-markdown'
 import './App.css'
 
 const API = 'http://localhost:8000'
@@ -121,7 +122,11 @@ function App() {
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="bubble">{m.content}</div>
+              <div className="bubble">
+                {m.role === 'assistant'
+                  ? <ReactMarkdown>{m.content}</ReactMarkdown>
+                  : m.content}
+              </div>
             </div>
           ))}
           {loading && <div className="msg assistant"><div className="bubble thinking">Thinking…</div></div>}

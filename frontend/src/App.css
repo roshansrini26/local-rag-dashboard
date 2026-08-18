@@ -50,12 +50,12 @@ body {
 .msg.assistant { justify-content: flex-start; }
 
 .bubble {
-  max-width: 78%;
-  padding: 12px 16px;
+  max-width: 85%;
+  padding: 14px 18px;
   border-radius: 14px;
-  line-height: 1.55;
+  line-height: 1.6;
   font-size: 14px;
-  white-space: pre-wrap;
+  text-align: left;
 }
 
 .msg.user .bubble { background: #2b5cff; color: #fff; }
@@ -157,3 +157,50 @@ body {
 
 .empty { color: #666; font-size: 14px; }
 .empty.small { font-size: 12px; }
+
+.bubble h1, .bubble h2, .bubble h3 {
+  font-size: 15px;
+  margin: 12px 0 6px;
+  font-weight: 600;
+}
+
+.bubble p { margin-bottom: 10px; }
+.bubble p:last-child { margin-bottom: 0; }
+
+.bubble ul, .bubble ol { margin: 8px 0 8px 20px; }
+.bubble li { margin-bottom: 4px; }
+
+.bubble code {
+  background: #0e1117;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'SF Mono', Monaco, monospace;
+}
+
+.bubble pre {
+  background: #0e1117;
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+
+.bubble pre code { background: none; padding: 0; }
+
+.bubble strong { font-weight: 600; color: #fff; }
+
+.bubble table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 12px;
+  width: 100%;
+}
+
+.bubble th, .bubble td {
+  border: 1px solid #333;
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.bubble th { background: #0e1117; font-weight: 600; }
