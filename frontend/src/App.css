@@ -204,3 +204,51 @@ body {
 }
 
 .bubble th { background: #0e1117; font-weight: 600; }
+
+.url-input {
+  width: 100%;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  border-radius: 8px;
+  border: 1px solid #333;
+  background: #1c1f2a;
+  color: #e6e6e6;
+  font-size: 12px;
+  outline: none;
+}
+
+.url-input:focus { border-color: #2b5cff; }
+
+.doc-list li.changed {
+  border-left: 3px solid #e8a33d;
+  padding-left: 8px;
+}
+
+.change-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0 24px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  background: #e8a33d;
+  color: #1a1a1a;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.change-actions button {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid #333;
+  background: #1c1f2a;
+  color: #e6e6e6;
+  cursor: pointer;
+}
+
+.change-actions button:hover { border-color: #2b5cff; }

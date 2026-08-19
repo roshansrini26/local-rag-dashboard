@@ -5,8 +5,11 @@ import './App.css'
 const API = 'http://localhost:8000'
 
 function App() {
-  const [documents, setDocuments] = useState([])
+  const [sources, setSources] = useState([])
   const [selected, setSelected] = useState(new Set())
+  const [urlInput, setUrlInput] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [addingUrl, setAddingUrl] = useState(false)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -16,18 +19,18 @@ function App() {
   const chatEndRef = useRef(null)
 
   useEffect(() => {
-    fetchDocuments()
+    fetchSources()
   }, [])
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
-  const fetchDocuments = async () => {
-    const res = await fetch(`${API}/documents`)
+  const fetchSources = async () => {
+    const res = await fetch(`${API}/sources`)
     const data = await res.json()
-    setDocuments(data.documents)
-    setSelected(new Set(data.documents))
+    setSources(data.sources)
+    setSelected(new Set(data.sources.map(s => s.id)))
   }
 
   const toggleDoc = (name) => {
@@ -58,7 +61,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           question,
-          sources: selected.size === documents.length ? null : Array.from(selected)
+          sources: selected.size === sources.length ? null : Array.from(selected)
         })
       })
       const data = await res.json()
@@ -75,20 +78,61 @@ function App() {
     const formData = new FormData()
     for (const f of files) formData.append('files', f)
     await fetch(`${API}/upload`, { method: 'POST', body: formData })
-    fetchDocuments()
+    fetchSources()
   }
 
   const runIngestion = async () => {
     setIngesting(true)
     await fetch(`${API}/ingest`, { method: 'POST' })
     setIngesting(false)
-    fetchDocuments()
+    fetchSources()
+  }
+
+    const addUrl = async () => {
+    if (!urlInput.trim()) return
+    setAddingUrl(true)
+    await fetch(`${API}/add-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: urlInput.trim() })
+    })
+    setUrlInput('')
+    setAddingUrl(false)
+    fetchSources()
+  }
+
+  const checkUpdates = async () => {
+    setChecking(true)
+    const res = await fetch(`${API}/check-updates`, { method: 'POST' })
+    const data = await res.json()
+    setChecking(false)
+    fetchSources()
+    if (data.count === 0) alert('All sources up to date.')
+  }
+
+  const approveUpdate = async (url) => {
+    await fetch(`${API}/approve-update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    })
+    fetchSources()
+  }
+
+  const rejectUpdate = async (url) => {
+    await fetch(`${API}/reject-update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    })
+    fetchSources()
   }
 
   return (
     <div className="app">
       <aside className="panel left">
-        <h2>Documents</h2>
+        <h2>Sources</h2>
+
         <label className="upload-btn">
           Upload PDF / DOCX
           <input type="file" multiple accept=".pdf,.docx" onChange={handleUpload} hidden />
@@ -96,19 +140,48 @@ function App() {
         <button className="ingest-btn" onClick={runIngestion} disabled={ingesting}>
           {ingesting ? 'Ingesting…' : 'Run Ingestion'}
         </button>
+
         <div className="divider" />
-        <p className="count">{documents.length} document(s)</p>
+
+        <input
+          className="url-input"
+          type="text"
+          placeholder="https://regulation-page…"
+          value={urlInput}
+          onChange={e => setUrlInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && addUrl()}
+        />
+        <button className="ingest-btn" onClick={addUrl} disabled={addingUrl || !urlInput.trim()}>
+          {addingUrl ? 'Adding…' : 'Track URL'}
+        </button>
+        <button className="ingest-btn" onClick={checkUpdates} disabled={checking}>
+          {checking ? 'Checking…' : 'Check for updates'}
+        </button>
+
+        <div className="divider" />
+
+        <p className="count">{sources.length} source(s)</p>
         <ul className="doc-list">
-          {documents.map(doc => (
-            <li key={doc}>
+          {sources.map(s => (
+            <li key={s.id} className={s.status === 'changed' ? 'changed' : ''}>
               <label>
                 <input
                   type="checkbox"
-                  checked={selected.has(doc)}
-                  onChange={() => toggleDoc(doc)}
+                  checked={selected.has(s.id)}
+                  onChange={() => toggleDoc(s.id)}
                 />
-                <span>{doc}</span>
+                <span>
+                  {s.type === 'url' ? '🔗 ' : '📄 '}
+                  {s.type === 'url' ? new URL(s.url).hostname : s.label}
+                </span>
               </label>
+              {s.status === 'changed' && (
+                <div className="change-actions">
+                  <span className="badge">Source changed</span>
+                  <button onClick={() => approveUpdate(s.url)}>Approve</button>
+                  <button onClick={() => rejectUpdate(s.url)}>Reject</button>
+                </div>
+              )}
             </li>
           ))}
         </ul>
@@ -147,22 +220,24 @@ function App() {
 
       <aside className="panel right">
         <h2>Quick Links</h2>
-        {Array.from(selected).filter(d => d.toLowerCase().endsWith('.pdf')).map(doc => (
-          <div key={doc} className="link-group">
-            <button className="link-header" onClick={() => toggleLinks(doc)}>
-              {expanded[doc] ? '▾' : '▸'} {doc}
-            </button>
-            {expanded[doc] && (
-              <div className="link-items">
-                {links[doc]?.length ? links[doc].map((l, i) => (
-                  <a key={i} href={l.url} target="_blank" rel="noreferrer">
-                    {l.url} <span className="page">p.{l.page}</span>
-                  </a>
-                )) : <p className="empty small">No links found.</p>}
-              </div>
-            )}
-          </div>
-        ))}
+        {sources
+          .filter(s => selected.has(s.id) && s.type === 'file' && s.label.toLowerCase().endsWith('.pdf'))
+          .map(s => (
+            <div key={s.id} className="link-group">
+              <button className="link-header" onClick={() => toggleLinks(s.label)}>
+                {expanded[s.label] ? '▾' : '▸'} {s.label}
+              </button>
+              {expanded[s.label] && (
+                <div className="link-items">
+                  {links[s.label]?.length ? links[s.label].map((l, i) => (
+                    <a key={i} href={l.url} target="_blank" rel="noreferrer">
+                      {l.url} <span className="page">p.{l.page}</span>
+                    </a>
+                  )) : <p className="empty small">No links found.</p>}
+                </div>
+              )}
+            </div>
+          ))}
       </aside>
     </div>
   )
