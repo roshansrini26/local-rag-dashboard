@@ -9,6 +9,14 @@ import re
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from rank_bm25 import BM25Okapi
 from link_extractor import get_links_for_file
+from ingest import (
+    add_url,
+    check_url_updates,
+    approve_url_update,
+    reject_url_update,
+    load_manifest,
+)
+from collections import defaultdict
 
 DATA_DIR = "data"
 CHROMA_DIR = "chroma_db"
@@ -41,7 +49,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_state = {}
 
 #Global state
 _state = {}
@@ -94,20 +101,34 @@ def retrieve_chunks_hybrid(query, allowed_sources=None, k=TOP_K):
     id_to_doc = {i: (d, m) for i, d, m in zip(s["bm25_ids"], s["bm25_docs"], s["bm25_metas"])}
     merged_ids = sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
 
-    chunks = []
+    by_source = defaultdict(list)
     for doc_id in merged_ids:
         if doc_id not in id_to_doc:
             continue
         doc, meta = id_to_doc[doc_id]
-        if allowed_sources and meta.get("source") not in allowed_sources:
+        src = meta.get("source", "unknown")
+        if allowed_sources and src not in allowed_sources:
             continue
-        chunks.append({
+        by_source[src].append({
             "text": doc,
-            "source": meta.get("source", "unknown"),
+            "source": src,
             "chunk_index": meta.get("chunk_index", "unknown")
         })
-        if len(chunks) >= k:
+
+    chunks = []
+    round_idx = 0
+    while len(chunks) < k:
+        added_this_round = False
+        for src in by_source:
+            if round_idx < len(by_source[src]):
+                chunks.append(by_source[src][round_idx])
+                added_this_round = True
+                if len(chunks) >= k:
+                    break
+        if not added_this_round:
             break
+        round_idx += 1
+
     return chunks
 
 
@@ -125,6 +146,9 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     chunks_used: List[dict]
+
+class UrlRequest(BaseModel):
+    url: str
 
 #Endpoints
 
@@ -164,5 +188,67 @@ def run_ingestion():
     result = subprocess.run(["python3", "ingest.py"], capture_output=True, text=True)
     get_state()
     rebuild_bm25()
-    return {"output": result.stdout[-2000:], "sucess": result.returncode == 0}
+    return {"output": result.stdout[-2000:], "success": result.returncode == 0}
 
+
+@app.get("/sources")
+def list_sources():
+    """All tracked sources — files and URLs — with status."""
+    manifest = load_manifest()
+
+    files = [
+        {
+            "id": name,
+            "type": "file",
+            "label": name,
+            "status": "current",
+            "ingested_at": meta.get("ingested_at"),
+        }
+        for name, meta in manifest["files"].items()
+    ]
+
+    urls = [
+        {
+            "id": meta["source_name"],
+            "type": "url",
+            "label": url,
+            "url": url,
+            "status": meta.get("status", "current"),
+            "ingested_at": meta.get("ingested_at"),
+            "last_checked": meta.get("last_checked"),
+        }
+        for url, meta in manifest["urls"].items()
+    ]
+
+    return {"sources": files + urls}
+
+
+@app.post("/add-url")
+def add_url_endpoint(req: UrlRequest):
+    s = get_state()
+    try:
+        add_url(req.url, s["embeddings"], s["collection"])
+        rebuild_bm25()
+        return {"success": True, "url": req.url}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/check-updates")
+def check_updates_endpoint():
+    changed = check_url_updates()
+    return {"changed": changed, "count": len(changed)}
+
+
+@app.post("/approve-update")
+def approve_endpoint(req: UrlRequest):
+    s = get_state()
+    approve_url_update(req.url, s["embeddings"], s["collection"])
+    rebuild_bm25()
+    return {"success": True}
+
+
+@app.post("/reject-update")
+def reject_endpoint(req: UrlRequest):
+    reject_url_update(req.url)
+    return {"success": True}
