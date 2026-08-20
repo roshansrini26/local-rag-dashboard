@@ -171,7 +171,7 @@ function App() {
                   onChange={() => toggleDoc(s.id)}
                 />
                 <span>
-                  {s.type === 'url' ? '🔗 ' : '📄 '}
+                  <span className="type-tag">{s.type === 'url' ? 'URL' : 'DOC'}</span>
                   {s.type === 'url' ? new URL(s.url).hostname : s.label}
                 </span>
               </label>
