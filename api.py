@@ -42,7 +42,7 @@ Rules:
 
 Answer:"""
 
-app = FastAPI(title="Local RAG Research Assistant API")
+app = FastAPI(title="Local DocQuery API")
 
 app.add_middleware(
     CORSMiddleware,
